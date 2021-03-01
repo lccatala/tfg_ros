@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 PKG = 'tfg'
 import roslib; roslib.load_manifest(PKG)
-import rosbag
+#import rosbag
 
+import numpy as np
 import rospy
 from rospy.numpy_msg import numpy_msg
 
 from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 import os
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
@@ -31,16 +33,25 @@ def get_images():
     # return images
 
 def talker():
-    bridge = CvBridge()
-    pub = rospy.Publisher('stream', Image, queue_size=10)
+    #bridge = CvBridge()
+    pub = rospy.Publisher('stream', CompressedImage, queue_size=10)
     rospy.init_node('talker',anonymous=True)
-    r = rospy.Rate(10) # 10hz
+    r = rospy.Rate(30) # 30hz
     
     vidcap = cv2.VideoCapture('2018-03-08-14-30-07_Dataset_year_-A0.h264')
     success, image = vidcap.read()
+    msg = CompressedImage()
+    msg.format = "jpeg"
+    image_index = 0
     while not rospy.is_shutdown() and success:
         try:
-            pub.publish(bridge.cv2_to_imgmsg(image))
+            #pub.publish(bridge.cv2_to_imgmsg(image))
+            image_index += 1
+            if image_index % 10 == 0:
+                msg.header.stamp = rospy.Time.now()
+                msg.data = np.array(cv2.imencode('.jpg', image)[1]).tostring()
+                pub.publish(msg)
+                image_index = 0
             success, image = vidcap.read()
         except CvBridgeError as e:
             print(e) 

@@ -51,6 +51,7 @@ def sliding_predict(model, image, num_classes, flip=True):
     total_predictions /= count_predictions
     return total_predictions
 
+import time
 
 def multi_scale_predict(model, image, scales, num_classes, device, flip=False):
     input_size = (image.size(2), image.size(3))
@@ -61,7 +62,7 @@ def multi_scale_predict(model, image, scales, num_classes, device, flip=False):
     for scale in scales:
         scaled_img = ndimage.zoom(image, (1.0, 1.0, float(scale), float(scale)), order=1, prefilter=False)
         scaled_img = torch.from_numpy(scaled_img).to(device)
-        scaled_prediction = upsample(model(scaled_img).cpu())
+        scaled_prediction = upsample(model(scaled_img))
 
         # if flip:
         #     fliped_img = scaled_img.flip(-1).to(device)
@@ -97,7 +98,7 @@ def inference_init(model_path):
 
     # Model
     config_arch_args = {'backbone': 'resnet50', 'freeze_bn': False, 'freeze_backbone': False}
-    model = getattr(models, 'PSPNet')(num_classes, **config_arch_args)
+    model = getattr(models, 'PSPNet')(num_classes, backbone='resnet50', freeze_bn=False, freeze_backbone=False)
     availble_gpus = list(range(torch.cuda.device_count()))
 
     device = torch.device('cuda:0' if len(availble_gpus) > 0 else 'cpu')
@@ -132,7 +133,7 @@ def inference_segment_image(image, mode):
         input_image = normalize(to_tensor(image)).unsqueeze(0)
         
         if mode == 'multiscale':
-            # scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] 
+            #scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] 
             scales = [0.75, 1.0] # Maybe this way it doesn't eat up all my memory
             prediction = multi_scale_predict(model, input_image, scales, num_classes, device)
         elif mode == 'sliding':

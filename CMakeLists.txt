@@ -9,7 +9,6 @@ project(tfg)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   rospy
-  rostpy_tutorials
 )
 
 ## System dependencies are found with CMake's conventions
