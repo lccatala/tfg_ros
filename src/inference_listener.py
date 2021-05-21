@@ -20,14 +20,13 @@ import PIL
 
 import time
 
-# model = None # Model for performing inference
 num_classes = None
 device = None # Torch device
 palette = None # Color palette
 bridge = None
 
 # Utility functions
-to_tensor = None 
+to_tensor = None
 normalize = None
 
 def resize_image(image, scale_percent):
@@ -41,7 +40,7 @@ def callback(data):
     image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
     #image = bridge.imgmsg_to_cv2(data)
     image = resize_image(image, 25)
-   
+
 
     start = time.monotonic()
     segmented_image = inference_segment_image(image, 'multiscale')
@@ -54,7 +53,6 @@ def callback(data):
     #print("np.array:", end_nparray - end_conversion)
     #print()
 
-    
     #segmented_image = resize_image(segmented_image, 125)
     #image = resize_image(image, 125)
 
@@ -72,12 +70,9 @@ def listener():
     rospy.spin()
 
 if __name__ == '__main__':
-    os.environ["CUDA_VISIBLE_DEVICES"]="3"
-    print(sys.version)
+    os.environ["CUDA_VISIBLE_DEVICES"]="0"
     print('Initializing model...')
     model_path = os.path.join('pytorch_segmentation', 'best_model.pth')
     inference_init(model_path)
-    #bridge = CvBridge()
-    plt.ion()
     print('Model initialized!')
     listener()

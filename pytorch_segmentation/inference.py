@@ -10,6 +10,16 @@ from pytorch_segmentation import models
 from pytorch_segmentation.utils.palette import CityScpates_palette
 from pytorch_segmentation.utils.helpers import colorize_mask
 from math import ceil
+from collections import OrderedDict
+
+num_classes = None
+device = None # Torch device
+palette = None # Color palette
+bridge = None
+
+# Utility functions
+to_tensor = None
+normalize = None
 
 def pad_image(img, target_size):
     rows_to_pad = max(target_size[0] - img.shape[2], 0)
@@ -134,7 +144,7 @@ def inference_segment_image(image, mode):
         
         if mode == 'multiscale':
             #scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] 
-            scales = [0.75, 1.0] # Maybe this way it doesn't eat up all my memory
+            scales = [1.0] # Maybe this way it doesn't eat up all my memory
             prediction = multi_scale_predict(model, input_image, scales, num_classes, device)
         elif mode == 'sliding':
             prediction = sliding_predict(model, input_image, num_classes)
