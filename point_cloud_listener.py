@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 PKG = 'tfg'
-from ctypes import sizeof
-from numpy.core.fromnumeric import var
-from numpy.lib.arraysetops import isin
 import roslib; roslib.load_manifest(PKG)
 import rospy
 from sensor_msgs.msg import PointCloud2, Image
 from sensor_msgs import point_cloud2
-import sensor_msgs.point_cloud2
+from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Header
 from cv_bridge import CvBridge, CvBridgeError
 from nav_msgs.msg import Odometry
-from tf2_msgs.msg import TFMessage
+from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
 import cv2
 import numpy as np
-import ros_numpy
-import sys
 import os
-import time
 import message_filters
+import pypcd
 
 from pytorch_segmentation.inference import inference_init
 from pytorch_segmentation.inference import inference_segment_image
 from pytorch_segmentation.utils.helpers import show_images
 from pytorch_segmentation.utils.palette import CityScpates_palette
+
+import atexit
+import matplotlib.pyplot as plt
 
 num_classes = None
 device = None # Torch device
@@ -34,14 +32,18 @@ bridge = None
 to_tensor = None
 normalize = None
 
+counts = []
+
 class Listener:
     def __init__(self):
         self.init_image_inference()
         self.bridge = CvBridge()
         self.mobile_classes = [11, 12, 13, 14, 15, 16, 17, 18, 18]
         self.points = []
+        self.counts = []
 
         rospy.init_node('point_cloud_listener')
+        self.pub = rospy.Publisher('final_cloud_publisher', PointCloud2, queue_size=1)
         odom_sub = message_filters.Subscriber("/vn100/odometry", Odometry)
         image_sub = message_filters.Subscriber("/gmsl/A0/image_color", Image)
         pc_sub = message_filters.Subscriber("/gmsl/A0/image_color/pixel_pointcloud", PointCloud2)
@@ -49,14 +51,23 @@ class Listener:
         ts.registerCallback(self.all_callback)
         rospy.spin()
 
-    def get_indices_from_segment_image(self, image):
-        segmented_image = inference_segment_image(image, 'multiscale')
-        # segmented_image = segmented_image.convert(palette=CityScpates_palette)
-        segmented_image = np.array(segmented_image)
+    def generate_point_cloud(self):
+        print('Publishing point cloud')
+        header = Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = "velodyne_front_link"
+        new_point_cloud = point_cloud2.create_cloud_xyz32(header, self.points)
 
-        # Paint all pixels from mobile classes white
+        print(len(point_cloud2.read_points_list(new_point_cloud, skip_nans=True)))
+
+        self.pub.publish(new_point_cloud)
+        rospy.sleep(2.0)
+        print('published')
+
+    def get_indices_from_segmented_image(self, image):
+        segmented_image = inference_segment_image(image, 'multiscale')
+        segmented_image = np.array(segmented_image)
         indices = np.isin(segmented_image, self.mobile_classes)
-        segmented_image[indices] = 255
         return indices
 
     def init_image_inference(self):
@@ -66,28 +77,39 @@ class Listener:
         inference_init(model_path)
         print('Model initialized!')
 
+    def transform_pc(self, pc, odom):
+        trans = TransformStamped()
+        trans.header = odom.header
+        trans.child_frame_id = odom.child_frame_id
+        trans.transform.translation.x = odom.pose.pose.position.x
+        trans.transform.translation.y = odom.pose.pose.position.y
+        trans.transform.translation.z = odom.pose.pose.position.z
+        trans.transform.rotation = odom.pose.pose.orientation
+
+        transformed_cloud = do_transform_cloud(pc, trans)
+        return transformed_cloud
+
     def all_callback(self, image, pc, odom):
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
-        pos = odom.pose.pose.position
-        indices = self.get_indices_from_segment_image(image)
-        count = 0
+        indices = self.get_indices_from_segmented_image(image)
+        pc = self.transform_pc(pc, odom)
+        
+        # count = 0
         for point in point_cloud2.read_points(pc, skip_nans=True):
             image_x = point[5]
             image_y = point[6]
             if not indices[round(image_y-1)][round(image_x-1)]:
-                count += 1
                 self.points.append((point[0], point[1], point[2]))
+                # count += 1
 
-        print(count)
+        # print(self.points[-1])
+        # self.counts.append(count)
+        self.generate_point_cloud()
 
         #print("({0},{1},{2})".format(pos.x, pos.y, pos.z))
-        
-        # Create new point cloud
-        # header = Header()
-        # header.stamp = rospy.Time.now()
-        # header.frame_id = "velodyne"
-        # new_point_cloud = point_cloud2.create_cloud_xyz32(header, self.points)
-        
+                
+
 
 if __name__ == '__main__':
     listener = Listener()
+    atexit.register(listener.generate_point_cloud)
