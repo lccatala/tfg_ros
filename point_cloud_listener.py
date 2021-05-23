@@ -2,7 +2,7 @@
 PKG = 'tfg'
 import roslib; roslib.load_manifest(PKG)
 import rospy
-from sensor_msgs.msg import PointCloud2, Image
+from sensor_msgs.msg import PointCloud2, PointField, Image
 from sensor_msgs import point_cloud2
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Header
@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import os
 import message_filters
-import pypcd
+import struct
 
 from pytorch_segmentation.inference import inference_init
 from pytorch_segmentation.inference import inference_segment_image
@@ -38,9 +38,24 @@ class Listener:
     def __init__(self):
         self.init_image_inference()
         self.bridge = CvBridge()
-        self.mobile_classes = [11, 12, 13, 14, 15, 16, 17, 18, 18]
+        self.mobile_classes = [10, 11, 12, 13, 14, 15, 16, 17, 18]
+        self.class_colors = [0xA52A2A, # Road: grey
+                             0xFFC0CB, # Sidewalk: pink
+                             0xFF7F50, # Building: orange
+                             0xCFC87C, # Wall: light-yellow
+                             0xCC6F4E, # Fence: light-brown
+                             0x475470, # Pole: blue-grey
+                             0xFF0000, # Traffic light: red
+                             0xCFD600, # Traffic sign: yellow
+                             0x00FF00, # Vegetation: green
+                             0x428000  # Terrain: dark green
+                            ]
         self.points = []
         self.counts = []
+        self.fields = [PointField('x',    0, PointField.FLOAT32, 1),
+                       PointField('y',    4, PointField.FLOAT32, 1),
+                       PointField('z',    8, PointField.FLOAT32, 1),
+                       PointField('rgb', 12, PointField.UINT32, 1)]
 
         rospy.init_node('point_cloud_listener')
         self.pub = rospy.Publisher('final_cloud_publisher', PointCloud2, queue_size=1)
@@ -52,23 +67,23 @@ class Listener:
         rospy.spin()
 
     def generate_point_cloud(self):
-        print('Publishing point cloud')
+        print('Publishing point cloud...')
         header = Header()
         header.stamp = rospy.Time.now()
         header.frame_id = "velodyne_front_link"
-        new_point_cloud = point_cloud2.create_cloud_xyz32(header, self.points)
+        
+        new_point_cloud = point_cloud2.create_cloud(header, self.fields, self.points)
 
-        print(len(point_cloud2.read_points_list(new_point_cloud, skip_nans=True)))
+        # print(len(point_cloud2.read_points_list(new_point_cloud, skip_nans=True)))
 
         self.pub.publish(new_point_cloud)
-        rospy.sleep(2.0)
         print('published')
 
-    def get_indices_from_segmented_image(self, image):
+    def get_correct_indices_and_segmented_image(self, image):
         segmented_image = inference_segment_image(image, 'multiscale')
         segmented_image = np.array(segmented_image)
         indices = np.isin(segmented_image, self.mobile_classes)
-        return indices
+        return indices, segmented_image
 
     def init_image_inference(self):
         os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -89,17 +104,24 @@ class Listener:
         transformed_cloud = do_transform_cloud(pc, trans)
         return transformed_cloud
 
+    def paint_point(self, point, point_class):
+        color = self.class_colors[point_class]
+        return [point[0], point[1], point[2], color]
+
     def all_callback(self, image, pc, odom):
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
-        indices = self.get_indices_from_segmented_image(image)
+        indices, segmented_image = self.get_correct_indices_and_segmented_image(image)
         pc = self.transform_pc(pc, odom)
         
         # count = 0
         for point in point_cloud2.read_points(pc, skip_nans=True):
-            image_x = point[5]
-            image_y = point[6]
-            if not indices[round(image_y-1)][round(image_x-1)]:
-                self.points.append((point[0], point[1], point[2]))
+            image_x = round(point[5]-1)
+            image_y = round(point[6]-1)
+            accepted = indices[image_y][image_x]
+            point_class = segmented_image[image_y][image_x]
+            if not accepted:
+                point = self.paint_point(point, point_class)
+                self.points.append(point)
                 # count += 1
 
         # print(self.points[-1])
