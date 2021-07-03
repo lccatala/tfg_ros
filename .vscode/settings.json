@@ -10,5 +10,6 @@
         "/opt/ros/noetic/lib/python3/dist-packages",
         "/home/alpasfly",
         "/home/alpasfly/slim"
-    ]
+    ],
+    "ros.distro": "noetic"
 }
