@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 PKG = 'tfg'
-import ctypes
 import roslib; roslib.load_manifest(PKG)
 import rospy
+import ctypes
 import open3d as o3d
-import trimesh
 import struct
 from sensor_msgs.msg import PointCloud2, PointField, Image
 from sensor_msgs import point_cloud2
@@ -17,6 +16,7 @@ from tf.transformations import euler_from_quaternion
 import numpy as np
 import os
 import message_filters
+import open3d as o3d
 
 from pytorch_segmentation.inference import inference_init
 from pytorch_segmentation.inference import inference_segment_image
@@ -42,7 +42,7 @@ class Listener:
         self.init_image_inference()
         self.bridge = CvBridge()
         self.mobile_classes = [10, 11, 12, 13, 14, 15, 16, 17, 18]
-        self.class_colors = [0xA52A2A, # Road: dark red
+        self.class_colors = [0xFFFFFF,#0xA52A2A, # Road: dark red
                              0xFFC0CB, # Sidewalk: pink
                              0xFF7F50, # Building: orange
                              0xCFC87C, # Wall: light-yellow
@@ -102,13 +102,17 @@ class Listener:
     def transform_pc(self, pc, odom):
         trans = TransformStamped()
         trans.header = odom.header
-        trans.transform.translation = odom.pose.pose.position
-        trans.transform.rotation    = odom.pose.pose.orientation
-        
-        # trans.transform.rotation.w = odom.pose.pose.orientation.w # Do not change, probably
-        # trans.transform.rotation.x = odom.pose.pose.orientation.x - (np.pi/4) - 0.122# More or less correct i guess
-        # trans.transform.rotation.y = odom.pose.pose.orientation.y + (np.pi/2)
-        # trans.transform.rotation.z = odom.pose.pose.orientation.z - (np.pi/2) # Correct I guess
+        # trans.transform.translation = odom.pose.pose.position
+        # trans.transform.rotation = odom.pose.pose.orientation
+        trans.transform.translation.x = odom.pose.pose.position.y # Use the negative to turn to the correct side
+        trans.transform.translation.y = odom.pose.pose.position.z 
+        trans.transform.translation.z = odom.pose.pose.position.x
+
+        trans.transform.rotation.w    = odom.pose.pose.orientation.w
+        trans.transform.rotation.x    = odom.pose.pose.orientation.y
+        trans.transform.rotation.y    = odom.pose.pose.orientation.z
+        trans.transform.rotation.z    = odom.pose.pose.orientation.x
+
 
         transformed_cloud = do_transform_cloud(pc, trans)
         return transformed_cloud
@@ -134,14 +138,33 @@ class Listener:
 
     def all_callback(self, image0, image1, image2, pc0, pc1, pc2, odom):
         self.process_image_and_pointcloud(image0, pc0, odom)
-        self.process_image_and_pointcloud(image1, pc1, odom)
-        self.process_image_and_pointcloud(image2, pc2, odom)
+        # self.process_image_and_pointcloud(image1, pc1, odom)
+        # self.process_image_and_pointcloud(image2, pc2, odom)
         # TODO: rotate odometry for each side image
         
         self.update_point_cloud()
         self.publish_point_cloud()
 
+    def save_point_cloud(self):
+        print('Saving cloud to cloud_color.ply...')
+        out_pcd = o3d.geometry.PointCloud()    
+        print('Creating points...')
+        xyz = []
+        rgb = []
+        for p in self.points:
+            xyz.append([p[0], p[1], p[2]])
+
+            r = (p[3] & 0x00FF0000) #>> 16
+            g = (p[3] & 0x0000FF00) #>> 8
+            b = (p[3] & 0x000000FF)
+            rgb.append([r, g, b])
+        out_pcd.points = o3d.utility.Vector3dVector(xyz)
+        out_pcd.colors = o3d.utility.Vector3dVector(rgb)
+        print('Points created')
+        o3d.io.write_point_cloud("/home/alpasfly/cloud_color.ply",out_pcd)
+        print('cloud saved')
+
 
 if __name__ == '__main__':
     listener = Listener()
-    # atexit.register(listener.save_point_cloud)
+    atexit.register(listener.save_point_cloud)
