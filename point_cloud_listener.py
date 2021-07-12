@@ -2,6 +2,7 @@
 PKG = 'tfg'
 import roslib; roslib.load_manifest(PKG)
 import rospy
+from laser_assembler.srv import AssembleScans2
 import ctypes
 import open3d as o3d
 import struct
@@ -9,10 +10,9 @@ from sensor_msgs.msg import PointCloud2, PointField, Image
 from sensor_msgs import point_cloud2
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Header
-from cv_bridge import CvBridge, CvBridgeError
+from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
-from tf.transformations import euler_from_quaternion
 import numpy as np
 import os
 import message_filters
@@ -20,11 +20,8 @@ import open3d as o3d
 
 from pytorch_segmentation.inference import inference_init
 from pytorch_segmentation.inference import inference_segment_image
-from pytorch_segmentation.utils.helpers import show_images
-from pytorch_segmentation.utils.palette import CityScpates_palette
 
 import atexit
-import matplotlib.pyplot as plt
 
 num_classes = None
 device = None # Torch device
@@ -92,7 +89,7 @@ class Listener:
     def publish_point_cloud(self):
         self.pub.publish(self.combined_pc)
 
-    def get_correct_indices_and_segmented_image(self, image):
+    def __get_correct_indices_and_segmented_image(self, image):
         segmented_image = inference_segment_image(image, 'multiscale')
         segmented_image = np.array(segmented_image)
         indices = np.isin(segmented_image, self.mobile_classes)
@@ -105,22 +102,23 @@ class Listener:
         inference_init(model_path)
         print('Model initialized!')
 
-    def transform_pc(self, pc, odom):
+    def __transform_pc(self, pc, odom):
         trans = TransformStamped()
-        trans.child_frame_id = 'base_link'
+        trans.child_frame_id = 'gmsl_centre_link'
         trans.transform.translation = odom.pose.pose.position
         trans.transform.rotation = odom.pose.pose.orientation
-
+        # trans.transform.rotation.y -= np.pi/8 #+ np.pi/64
         transformed_cloud = do_transform_cloud(pc, trans)
+        transformed_cloud.header.frame_id = 'gmsl_centre_link'
         return transformed_cloud
 
     def paint_point(self, point, point_class):
         color = self.class_colors[point_class]
         return [point[2], -point[0], -point[1], color] # 2, 0, 1
 
-    def process_image_and_pointcloud(self, image, pc, odom):
+    def _process_image_and_pointcloud(self, image, pc, odom):
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
-        indices, segmented_image = self.get_correct_indices_and_segmented_image(image)
+        indices, segmented_image = self.__get_correct_indices_and_segmented_image(image)
         
         self.current_points.clear()
         for point in point_cloud2.read_points(pc, skip_nans=True):
@@ -135,31 +133,26 @@ class Listener:
         # Create new cloud with current points
         self.header.stamp = rospy.Time.now()
         self.current_pc = point_cloud2.create_cloud(self.header, self.fields, self.current_points)
-
-        # Transform new cloud
-        trans = TransformStamped()
-        trans.child_frame_id = 'gmsl_centre_link'
-        trans.transform.translation = odom.pose.pose.position
-        trans.transform.rotation = odom.pose.pose.orientation
-        self.current_pc = do_transform_cloud(self.current_pc, trans)
         self.current_pc.header.frame_id = 'gmsl_centre_link'
-        self.pub.publish(self.current_pc)
-        print(self.current_pc.header.frame_id, len(self.current_points))
+        
+        self.current_pc = self.__transform_pc(self.current_pc, odom)
+        # self.pub.publish(self.current_pc)
 
 
         # Add points from new cloud to final points
-        # for point in point_cloud2.read_points(self.current_pc, skip_nans=True):
-        #     self.combined_points.append(point)
-
-
+        self.combined_points.extend(point_cloud2.read_points_list(self.current_pc))
+        
         # Create combined cloud
-        # self.header.stamp = rospy.Time.now()
-        # self.combined_pc = point_cloud2.create_cloud(self.header, self.fields, self.combined_points)
+        self.header.stamp = rospy.Time.now()
+        self.combined_pc = point_cloud2.create_cloud(self.header, self.fields, self.combined_points)
+        self.combined_pc.header.frame_id = 'gmsl_centre_link'
 
+        # Publish combined cloud
+        self.pub.publish(self.combined_pc)
 
 
     def all_callback(self, image0, image1, image2, pc0, pc1, pc2, odom):
-        self.process_image_and_pointcloud(image0, pc0, odom)
+        self._process_image_and_pointcloud(image0, pc0, odom)
         # TODO: rotate odometry for each side image
         # self.process_image_and_pointcloud(image1, pc1, odom)
         # self.process_image_and_pointcloud(image2, pc2, odom)
