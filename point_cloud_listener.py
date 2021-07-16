@@ -2,9 +2,9 @@
 PKG = 'tfg'
 import roslib; roslib.load_manifest(PKG)
 import rospy
-from laser_assembler.srv import AssembleScans2
 import ctypes
 import open3d as o3d
+import trimesh
 import struct
 from sensor_msgs.msg import PointCloud2, PointField, Image
 from sensor_msgs import point_cloud2
@@ -62,6 +62,7 @@ class Listener:
 
         self.header = Header()
         self.header.frame_id = "base_link"
+        self.forward_tilt = 0.13
 
         self.current_points = []
         self.combined_points = []
@@ -107,14 +108,15 @@ class Listener:
         trans.child_frame_id = 'gmsl_centre_link'
         trans.transform.translation = odom.pose.pose.position
         trans.transform.rotation = odom.pose.pose.orientation
-        # trans.transform.rotation.y -= np.pi/8 #+ np.pi/64
+        trans.transform.rotation.y += self.forward_tilt
+        
         transformed_cloud = do_transform_cloud(pc, trans)
         transformed_cloud.header.frame_id = 'gmsl_centre_link'
         return transformed_cloud
 
     def paint_point(self, point, point_class):
         color = self.class_colors[point_class]
-        return [point[2], -point[0], -point[1], color] # 2, 0, 1
+        return [point[2], -point[0], -point[1], color]
 
     def _process_image_and_pointcloud(self, image, pc, odom):
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
@@ -136,7 +138,6 @@ class Listener:
         self.current_pc.header.frame_id = 'gmsl_centre_link'
         
         self.current_pc = self.__transform_pc(self.current_pc, odom)
-        # self.pub.publish(self.current_pc)
 
 
         # Add points from new cloud to final points
@@ -159,23 +160,41 @@ class Listener:
         
 
     def save_point_cloud(self):
-        print('Saving cloud to cloud_color.ply...')
-        out_pcd = o3d.geometry.PointCloud()    
+        filename = 'cloud_color.ply'
+        print('Saving cloud to ', filename)
+        pcd = o3d.geometry.PointCloud()    
         print('Creating points...')
         xyz = []
         rgb = []
-        for p in self.current_points:
+        for p in self.combined_points:
             xyz.append([p[0], p[1], p[2]])
 
             r = (p[3] & 0x00FF0000) #>> 16
             g = (p[3] & 0x0000FF00) #>> 8
             b = (p[3] & 0x000000FF)
             rgb.append([r, g, b])
-        out_pcd.points = o3d.utility.Vector3dVector(xyz)
-        out_pcd.colors = o3d.utility.Vector3dVector(rgb)
-        print('Points created')
-        o3d.io.write_point_cloud("/home/alpasfly/cloud_color.ply",out_pcd)
-        print('cloud saved')
+        pcd.points = o3d.utility.Vector3dVector(xyz)
+        pcd.colors = o3d.utility.Vector3dVector(rgb)
+        print('pcd created')
+        print('estimating normals')
+        pcd.estimate_normals()
+
+        print('estimating distances')
+        distances = pcd.compute_nearest_neighbor_distance()
+        avg_dist = np.mean(distances)
+        alpha = 1.0
+        radius = alpha * avg_dist
+
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector([radius, radius * 2]))
+
+        print('creating triangular mesh')
+        tri_mesh = trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles), vertex_normals=np.asarray(mesh.vertex_normals))
+
+        print(trimesh.convex.is_convex(tri_mesh))
+        print('saving')
+        tri_mesh.export(file_obj='output.obj')
+        # o3d.io.write_point_cloud("/home/alpasfly/" + filename,out_pcd)
+        # print('cloud saved')
 
 
 if __name__ == '__main__':

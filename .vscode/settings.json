@@ -11,5 +11,6 @@
         "/home/alpasfly",
         "/home/alpasfly/slim"
     ],
-    "ros.distro": "noetic"
+    "ros.distro": "noetic",
+    "cmake.configureOnOpen": false
 }
