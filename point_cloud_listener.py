@@ -55,14 +55,15 @@ class Listener:
                        PointField('y',    4, PointField.FLOAT32, 1),
                        PointField('z',    8, PointField.FLOAT32, 1),
                        PointField('rgb', 12, PointField.UINT32, 1)]
-                    #    PointField('intensity', 16, 7, 1),
-                    #    PointField('ring', 20, 4, 1),
-                    #    PointField('U', 24, 7, 1),
-                    #    PointField('V', 28, 7, 1)]
 
         self.header = Header()
         self.header.frame_id = "base_link"
         self.forward_tilt = 0.13
+
+        self.rotation_threshold = 1.0
+        self.last_rotation_x = 0.0
+        self.last_rotation_y = 0.0
+        self.last_rotation_z = 0.0
 
         self.current_points = []
         self.combined_points = []
@@ -77,9 +78,9 @@ class Listener:
         pc_sub0 = message_filters.Subscriber("/gmsl/A0/image_color/pixel_pointcloud", PointCloud2)
         pc_sub1 = message_filters.Subscriber("/gmsl/A1/image_color/pixel_pointcloud", PointCloud2)
         pc_sub2 = message_filters.Subscriber("/gmsl/A2/image_color/pixel_pointcloud", PointCloud2)
-        ts = message_filters.ApproximateTimeSynchronizer([image_sub0, image_sub1, image_sub2, 
-                                                          pc_sub0, pc_sub1, pc_sub2, 
-                                                          odom_sub], 10, 0.1)
+        ts = message_filters.ApproximateTimeSynchronizer([image_sub0, image_sub1, image_sub2,
+                                                          pc_sub0, pc_sub1, pc_sub2,
+                                                          odom_sub], 10, 0.05)
         ts.registerCallback(self.all_callback)
         rospy.spin()
 
@@ -108,8 +109,7 @@ class Listener:
         trans.child_frame_id = 'gmsl_centre_link'
         trans.transform.translation = odom.pose.pose.position
         trans.transform.rotation = odom.pose.pose.orientation
-        trans.transform.rotation.y += self.forward_tilt
-        
+
         transformed_cloud = do_transform_cloud(pc, trans)
         transformed_cloud.header.frame_id = 'gmsl_centre_link'
         return transformed_cloud
@@ -121,7 +121,7 @@ class Listener:
     def _process_image_and_pointcloud(self, image, pc, odom):
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
         indices, segmented_image = self.__get_correct_indices_and_segmented_image(image)
-        
+
         self.current_points.clear()
         for point in point_cloud2.read_points(pc, skip_nans=True):
             image_x = round(point[5]-1)
@@ -131,18 +131,54 @@ class Listener:
                 point_class = segmented_image[image_y][image_x]
                 point = self.paint_point(point, point_class)
                 self.current_points.append(point)
-            
+
         # Create new cloud with current points
         self.header.stamp = rospy.Time.now()
         self.current_pc = point_cloud2.create_cloud(self.header, self.fields, self.current_points)
         self.current_pc.header.frame_id = 'gmsl_centre_link'
-        
+
         self.current_pc = self.__transform_pc(self.current_pc, odom)
 
 
         # Add points from new cloud to final points
         self.combined_points.extend(point_cloud2.read_points_list(self.current_pc))
-        
+
+    def rotations_below_threshold(self, odom):
+        delta_rotation_x = abs(self.last_rotation_x - odom.pose.pose.orientation.x)
+        delta_rotation_y = abs(self.last_rotation_y - odom.pose.pose.orientation.y)
+        delta_rotation_z = abs(self.last_rotation_z - odom.pose.pose.orientation.z)
+
+        if delta_rotation_x >= self.rotation_threshold or delta_rotation_y >= self.rotation_threshold or delta_rotation_z >= self.rotation_threshold:
+            return False
+        self.last_rotation_x = odom.pose.pose.orientation.x
+        self.last_rotation_y = odom.pose.pose.orientation.y
+        self.last_rotation_z = odom.pose.pose.orientation.z
+        return True
+
+    def all_callback(self, image0, image1, image2, pc0, pc1, pc2, odom):
+        # Filter rotation outliers
+        if (not self.rotations_below_threshold(odom)):
+            return
+
+        # Prepare odometry for and segment central image
+        odom.pose.pose.orientation.y += self.forward_tilt
+        self._process_image_and_pointcloud(image0, pc0, odom)
+        odom.pose.pose.orientation.y -= self.forward_tilt
+
+        # Prepare odometry for and segment left image
+        odom.pose.pose.orientation.z += np.radians(22)
+        odom.pose.pose.position.x -= 0.4
+        odom.pose.pose.position.y -= 0.2
+        odom.pose.pose.position.z += 0.4
+        self._process_image_and_pointcloud(image1, pc1, odom)
+
+        # Prepare odometry for and segment right image
+        odom.pose.pose.orientation.z -= np.radians(43)
+        #odom.pose.pose.position.x += 0.8
+        odom.pose.pose.position.y += 0.3
+        odom.pose.pose.position.z -= 0.2
+        self._process_image_and_pointcloud(image2, pc2, odom)
+
         # Create combined cloud
         self.header.stamp = rospy.Time.now()
         self.combined_pc = point_cloud2.create_cloud(self.header, self.fields, self.combined_points)
@@ -152,17 +188,10 @@ class Listener:
         self.pub.publish(self.combined_pc)
 
 
-    def all_callback(self, image0, image1, image2, pc0, pc1, pc2, odom):
-        self._process_image_and_pointcloud(image0, pc0, odom)
-        # TODO: rotate odometry for each side image
-        # self.process_image_and_pointcloud(image1, pc1, odom)
-        # self.process_image_and_pointcloud(image2, pc2, odom)
-        
-
     def save_point_cloud(self):
         filename = 'cloud_color.ply'
         print('Saving cloud to ', filename)
-        pcd = o3d.geometry.PointCloud()    
+        pcd = o3d.geometry.PointCloud()
         print('Creating points...')
         xyz = []
         rgb = []
@@ -175,26 +204,26 @@ class Listener:
             rgb.append([r, g, b])
         pcd.points = o3d.utility.Vector3dVector(xyz)
         pcd.colors = o3d.utility.Vector3dVector(rgb)
-        print('pcd created')
-        print('estimating normals')
-        pcd.estimate_normals()
+        # print('pcd created')
+        # print('estimating normals')
+        # pcd.estimate_normals()
 
-        print('estimating distances')
-        distances = pcd.compute_nearest_neighbor_distance()
-        avg_dist = np.mean(distances)
-        alpha = 1.0
-        radius = alpha * avg_dist
+        # print('estimating distances')
+        # distances = pcd.compute_nearest_neighbor_distance()
+        # avg_dist = np.mean(distances)
+        # alpha = 1.0
+        # radius = alpha * avg_dist
 
-        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector([radius, radius * 2]))
+        # mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector([radius, radius * 2]))
 
-        print('creating triangular mesh')
-        tri_mesh = trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles), vertex_normals=np.asarray(mesh.vertex_normals))
+        # print('creating triangular mesh')
+        # tri_mesh = trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles), vertex_normals=np.asarray(mesh.vertex_normals))
 
-        print(trimesh.convex.is_convex(tri_mesh))
-        print('saving')
-        tri_mesh.export(file_obj='output.obj')
-        # o3d.io.write_point_cloud("/home/alpasfly/" + filename,out_pcd)
-        # print('cloud saved')
+        # print(trimesh.convex.is_convex(tri_mesh))
+        # print('saving')
+        # tri_mesh.export(file_obj='output.obj')
+        o3d.io.write_point_cloud("/home/alpasfly/" + filename, pcd)
+        print('cloud saved')
 
 
 if __name__ == '__main__':
