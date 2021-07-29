@@ -38,7 +38,11 @@ class Listener:
     def __init__(self):
         self.init_image_inference()
         self.bridge = CvBridge()
+
+        # ID for each mobile class (pedestrian, car...)
         self.mobile_classes = [10, 11, 12, 13, 14, 15, 16, 17, 18]
+
+        # Colors to differenciate 3D points of each class
         self.class_colors = [0xFFFFFF,#0xA52A2A, # Road: dark red
                              0xFFC0CB, # Sidewalk: pink
                              0xFF7F50, # Building: orange
@@ -51,15 +55,18 @@ class Listener:
                              0x428000  # Terrain: dark green
                             ]
 
+        # Data fields for the published pointcloud
         self.fields = [PointField('x',    0, PointField.FLOAT32, 1),
                        PointField('y',    4, PointField.FLOAT32, 1),
                        PointField('z',    8, PointField.FLOAT32, 1),
                        PointField('rgb', 12, PointField.UINT32, 1)]
-
         self.header = Header()
         self.header.frame_id = "base_link"
+
+        # For tilt correction in each generated cloud
         self.forward_tilt = 0.13
 
+        # For filtering out large and sudden changes in rotation
         self.rotation_threshold = 1.0
         self.last_rotation_x = 0.0
         self.last_rotation_y = 0.0
@@ -85,12 +92,20 @@ class Listener:
         rospy.spin()
 
     def __get_correct_indices_and_segmented_image(self, image):
+        """
+        Segments the input image and returns:
+        - A numpy array of all indices corresponding to a mobile class
+        - The segmented image
+        """
         segmented_image = inference_segment_image(image, 'multiscale')
         segmented_image = np.array(segmented_image)
         indices = np.isin(segmented_image, self.mobile_classes)
         return indices, segmented_image
 
     def init_image_inference(self):
+        """
+        Initalize image inference model
+        """
         os.environ["CUDA_VISIBLE_DEVICES"]="0"
         print('Initializing model...')
         model_filename = 'best_model.pth'
@@ -98,6 +113,10 @@ class Listener:
         print('Model initialized!')
 
     def __transform_pc(self, pc, odom):
+        """
+        Change position and rotation of a given point cloud (pc)
+        to those of the odometry (odom)
+        """
         trans = TransformStamped()
         trans.child_frame_id = 'gmsl_centre_link'
         trans.transform.translation = odom.pose.pose.position
@@ -108,10 +127,18 @@ class Listener:
         return transformed_cloud
 
     def __reformat_point(self, point, point_class):
+        """
+        - Change color of point according to it's class
+        - Swap point axis values for correct positioning
+        """
         color = self.class_colors[point_class]
         return [point[2], -point[0], -point[1], color]
 
     def _process_image_and_pointcloud(self, image, pc, odom):
+        """
+        Handle an image and it's corresponding projected point cloud
+        Should be used also for side images and clouds
+        """
         image = self.bridge.imgmsg_to_cv2(image, 'bgr8')
         indices, segmented_image = self.__get_correct_indices_and_segmented_image(image)
 
@@ -136,6 +163,10 @@ class Listener:
         self.combined_points.extend(point_cloud2.read_points_list(self.current_pc))
 
     def rotations_below_threshold(self, odom):
+        """
+        Returns False if the current rotation of odometry hasn't changed
+        too abruptly from the last received one
+        """
         delta_rotation_x = abs(self.last_rotation_x - odom.pose.pose.orientation.x)
         delta_rotation_y = abs(self.last_rotation_y - odom.pose.pose.orientation.y)
         delta_rotation_z = abs(self.last_rotation_z - odom.pose.pose.orientation.z)
@@ -148,6 +179,11 @@ class Listener:
         return True
 
     def all_callback(self, image0, image1, image2, pc0, pc1, pc2, odom):
+        """
+        Receives 3 simultaneous images and their corresponding point clouds
+        Only handles one of them
+        """
+
         # Filter rotation outliers
         if (not self.rotations_below_threshold(odom)):
             return
@@ -166,6 +202,11 @@ class Listener:
 
 
     def save_point_cloud(self):
+        """
+        Runs once the node is attempted to shut down (ctrl+c)
+        Saves the combined point cloud to cloud_color.ply
+        """
+
         filename = 'cloud_color.ply'
         print('Saving cloud to ', filename)
         pcd = o3d.geometry.PointCloud()
@@ -181,24 +222,6 @@ class Listener:
             rgb.append([r, g, b])
         pcd.points = o3d.utility.Vector3dVector(xyz)
         pcd.colors = o3d.utility.Vector3dVector(rgb)
-        # print('pcd created')
-        # print('estimating normals')
-        # pcd.estimate_normals()
-
-        # print('estimating distances')
-        # distances = pcd.compute_nearest_neighbor_distance()
-        # avg_dist = np.mean(distances)
-        # alpha = 1.0
-        # radius = alpha * avg_dist
-
-        # mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector([radius, radius * 2]))
-
-        # print('creating triangular mesh')
-        # tri_mesh = trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles), vertex_normals=np.asarray(mesh.vertex_normals))
-
-        # print(trimesh.convex.is_convex(tri_mesh))
-        # print('saving')
-        # tri_mesh.export(file_obj='output.obj')
         o3d.io.write_point_cloud("/home/alpasfly/" + filename, pcd)
         print('cloud saved')
 
