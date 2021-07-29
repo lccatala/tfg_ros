@@ -33,7 +33,7 @@ def sliding_predict(model, image, num_classes, flip=True):
     overlap = 1/3
 
     stride = ceil(tile_size[0] * (1 - overlap))
-    
+
     num_rows = int(ceil((image_size[2] - tile_size[0]) / stride) + 1)
     num_cols = int(ceil((image_size[3] - tile_size[1]) / stride) + 1)
     total_predictions = np.zeros((num_classes, image_size[2], image_size[3]))
@@ -93,8 +93,8 @@ def inference_init(model_path):
         - palette: color palette for CityScapes dataset
     """
 
-    filepaths_prefix = os.getcwd() + '/catkin_ws/src/tfg/'
-    model_path = filepaths_prefix + model_path
+    filepaths_prefix =  os.path.dirname(os.path.realpath(__file__))
+    model_path = os.path.join(filepaths_prefix, model_path)
 
     global to_tensor, normalize, model, device, num_classes, palette
     # Check if the pretrained model is available
@@ -113,8 +113,6 @@ def inference_init(model_path):
 
     device = torch.device('cuda:0' if len(availble_gpus) > 0 else 'cpu')
 
-    # Load checkpoint
-    print('model path:', model_path)
     checkpoint = torch.load(model_path,  map_location=device)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint.keys():
         checkpoint = checkpoint['state_dict']
@@ -130,7 +128,7 @@ def inference_init(model_path):
                 name = k[7:]
                 new_state_dict[name] = v
             checkpoint = new_state_dict
-    
+
     num_classes = 19
 
     # load
@@ -141,9 +139,9 @@ def inference_init(model_path):
 def inference_segment_image(image, mode):
     with torch.no_grad():
         input_image = normalize(to_tensor(image)).unsqueeze(0)
-        
+
         if mode == 'multiscale':
-            #scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] 
+            #scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25]
             scales = [1.0] # Maybe this way it doesn't eat up all my memory
             prediction = multi_scale_predict(model, input_image, scales, num_classes, device)
         elif mode == 'sliding':
@@ -153,5 +151,5 @@ def inference_segment_image(image, mode):
             prediction = prediction.squeeze(0).cpu().numpy()
         prediction = F.softmax(torch.from_numpy(prediction), dim=0).argmax(0).cpu().numpy()
         output_image = colorize_mask(prediction, palette)
-    
+
     return output_image

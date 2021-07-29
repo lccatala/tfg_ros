@@ -84,13 +84,6 @@ class Listener:
         ts.registerCallback(self.all_callback)
         rospy.spin()
 
-    def update_point_cloud(self):
-        self.header.stamp = rospy.Time.now()
-        self.current_pc = point_cloud2.create_cloud(self.header, self.fields, self.current_points)
-
-    def publish_point_cloud(self):
-        self.pub.publish(self.combined_pc)
-
     def __get_correct_indices_and_segmented_image(self, image):
         segmented_image = inference_segment_image(image, 'multiscale')
         segmented_image = np.array(segmented_image)
@@ -100,8 +93,8 @@ class Listener:
     def init_image_inference(self):
         os.environ["CUDA_VISIBLE_DEVICES"]="0"
         print('Initializing model...')
-        model_path = os.path.join('pytorch_segmentation', 'best_model.pth')
-        inference_init(model_path)
+        model_filename = 'best_model.pth'
+        inference_init(model_filename)
         print('Model initialized!')
 
     def __transform_pc(self, pc, odom):
@@ -114,7 +107,7 @@ class Listener:
         transformed_cloud.header.frame_id = 'gmsl_centre_link'
         return transformed_cloud
 
-    def paint_point(self, point, point_class):
+    def __reformat_point(self, point, point_class):
         color = self.class_colors[point_class]
         return [point[2], -point[0], -point[1], color]
 
@@ -129,7 +122,7 @@ class Listener:
             is_mobile = indices[image_y][image_x]
             if not is_mobile:
                 point_class = segmented_image[image_y][image_x]
-                point = self.paint_point(point, point_class)
+                point = self.__reformat_point(point, point_class)
                 self.current_points.append(point)
 
         # Create new cloud with current points
@@ -138,7 +131,6 @@ class Listener:
         self.current_pc.header.frame_id = 'gmsl_centre_link'
 
         self.current_pc = self.__transform_pc(self.current_pc, odom)
-
 
         # Add points from new cloud to final points
         self.combined_points.extend(point_cloud2.read_points_list(self.current_pc))
@@ -163,21 +155,6 @@ class Listener:
         # Prepare odometry for and segment central image
         odom.pose.pose.orientation.y += self.forward_tilt
         self._process_image_and_pointcloud(image0, pc0, odom)
-        odom.pose.pose.orientation.y -= self.forward_tilt
-
-        # Prepare odometry for and segment left image
-        odom.pose.pose.orientation.z += np.radians(22)
-        odom.pose.pose.position.x -= 0.4
-        odom.pose.pose.position.y -= 0.2
-        odom.pose.pose.position.z += 0.4
-        self._process_image_and_pointcloud(image1, pc1, odom)
-
-        # Prepare odometry for and segment right image
-        odom.pose.pose.orientation.z -= np.radians(43)
-        #odom.pose.pose.position.x += 0.8
-        odom.pose.pose.position.y += 0.3
-        odom.pose.pose.position.z -= 0.2
-        self._process_image_and_pointcloud(image2, pc2, odom)
 
         # Create combined cloud
         self.header.stamp = rospy.Time.now()
